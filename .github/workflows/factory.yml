@@ -1,0 +1,61 @@
+name: Factory cycle
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: factory
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  models: read
+
+jobs:
+  cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AI_PROVIDER: ${{ vars.AI_PROVIDER || 'github-models' }}
+      GODOT_BIN: godot
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Godot 4.3 (headless)
+        run: |
+          curl -fsSL -o godot.zip https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip
+          unzip -q godot.zip
+          sudo mv Godot_v4.3-stable_linux.x86_64 /usr/local/bin/godot
+          godot --version
+
+      - name: Install Ollama (only when AI_PROVIDER=ollama)
+        if: env.AI_PROVIDER == 'ollama'
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve > ollama.log 2>&1 &
+          sleep 8
+          ollama pull qwen2.5-coder:3b
+
+      - name: Git identity
+        run: |
+          git config user.name "gramjeevan-factory[bot]"
+          git config user.email "factory@users.noreply.github.com"
+
+      - name: Run one development cycle
+        run: python3 factory/factory.py
+
+      - name: Keep reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cycle-report
+          path: reports/
+          if-no-files-found: ignore
