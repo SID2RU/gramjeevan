@@ -13,10 +13,10 @@ func check(cond: bool, label: String) -> void:
 		failures.append(label)
 
 
-func _init() -> void:
+func _initialize() -> void:
 	_test_scripts_parse()
 	_test_game_state()
-	_test_main_scene()
+	await _test_main_scene()
 	if failures.is_empty():
 		print("ALL TESTS PASSED")
 		quit(0)
@@ -73,5 +73,6 @@ func _test_main_scene() -> void:
 		return
 	var inst = packed.instantiate()
 	root.add_child(inst)
+	await process_frame
 	check(inst.get_child_count() > 0, "main scene builds its UI")
 	inst.queue_free()
