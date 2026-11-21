@@ -1,0 +1,26 @@
+name: Game checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GODOT_BIN: godot
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Godot 4.3 (headless)
+        run: |
+          curl -fsSL -o godot.zip https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip
+          unzip -q godot.zip
+          sudo mv Godot_v4.3-stable_linux.x86_64 /usr/local/bin/godot
+      - name: Godot import and tests
+        run: python3 factory/factory.py --checks-only

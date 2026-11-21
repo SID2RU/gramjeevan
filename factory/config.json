@@ -1,0 +1,13 @@
+{
+  "github_model": "openai/gpt-4o-mini",
+  "ollama_model": "qwen2.5-coder:3b",
+  "max_attempts": 3,
+  "max_files": 4,
+  "max_changed_lines": 300,
+  "max_file_chars": 30000,
+  "max_context_chars": 28000,
+  "max_open_ai_prs": 3,
+  "allowed_prefixes": ["game/scripts/", "game/scenes/"],
+  "allowed_ext": [".gd", ".tscn"],
+  "banned_substrings": ["OS.execute", "OS.shell_open", "OS.kill", "OS.create_process", "HTTPRequest", "HTTPClient", "TCPServer", "StreamPeerTCP", "DirAccess.remove", "remove_absolute", "OS.set_environment"]
+}
