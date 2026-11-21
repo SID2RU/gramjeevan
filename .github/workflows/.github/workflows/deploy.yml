@@ -1,0 +1,63 @@
+name: Deploy game (go live)
+
+on:
+  push:
+    branches: [main]
+    paths: ["game/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GODOT_BIN: godot
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot 4.3 (headless)
+        run: |
+          curl -fsSL -o godot.zip https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip
+          unzip -q godot.zip
+          sudo mv Godot_v4.3-stable_linux.x86_64 /usr/local/bin/godot
+
+      - name: Install Web export templates
+        run: |
+          curl -fsSL -o templates.tpz https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz
+          unzip -q templates.tpz 'templates/web_nothreads_*' 'templates/version.txt' -d tpl
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.3.stable"
+          mv tpl/templates/* "$HOME/.local/share/godot/export_templates/4.3.stable/"
+          ls "$HOME/.local/share/godot/export_templates/4.3.stable/"
+
+      - name: Run checks before going live
+        run: python3 factory/factory.py --checks-only
+
+      - name: Export Web build
+        run: |
+          mkdir -p build
+          godot --headless --path game --export-release "Web" ../build/index.html
+          ls -la build
+          test -f build/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
