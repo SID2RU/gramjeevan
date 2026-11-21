@@ -94,23 +94,29 @@ def read_context():
 
 
 def http_json(url, payload, headers, timeout=300):
-    req = urllib.request.Request(
-        url, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json",
-                 "User-Agent": "gramjeevan-factory",
-                 "X-GitHub-Api-Version": "2022-11-28", **headers})
+    """POST JSON using curl -L (as GitHub's docs do) so redirects keep the POST body."""
+    cmd = ["curl", "-sS", "-L", "--max-time", str(timeout), "-X", "POST",
+           "-w", "\n__HTTP__%{http_code}",
+           "-H", "Content-Type: application/json",
+           "-H", "User-Agent: gramjeevan-factory",
+           "-H", "X-GitHub-Api-Version: 2022-11-28"]
+    for k, v in headers.items():
+        cmd += ["-H", "%s: %s" % (k, v)]
+    cmd += ["-d", "@-", url]
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            status = r.status
-            ctype = r.headers.get("Content-Type", "")
-            body = r.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:500]
-        raise RuntimeError("HTTP %s: %s" % (e.code, detail))
+        p = subprocess.run(cmd, input=json.dumps(payload), capture_output=True,
+                           text=True, timeout=timeout + 30)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("request timed out")
+    if p.returncode != 0:
+        raise RuntimeError("curl error %s: %s" % (p.returncode, p.stderr.strip()[:300]))
+    body, _, status = p.stdout.rpartition("\n__HTTP__")
+    if not status.startswith("2"):
+        raise RuntimeError("HTTP %s: %s" % (status, body[:500]))
     try:
         return json.loads(body)
     except json.JSONDecodeError:
-        raise RuntimeError("HTTP %s, content-type %s, not JSON. Body starts: %r" % (status, ctype, body[:400]))
+        raise RuntimeError("HTTP %s, not JSON. Body starts: %r" % (status, body[:400]))
 
 
 def call_model(messages):
