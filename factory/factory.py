@@ -96,9 +96,21 @@ def read_context():
 def http_json(url, payload, headers, timeout=300):
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", **headers})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+        headers={"Content-Type": "application/json",
+                 "User-Agent": "gramjeevan-factory",
+                 "X-GitHub-Api-Version": "2022-11-28", **headers})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            status = r.status
+            ctype = r.headers.get("Content-Type", "")
+            body = r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:500]
+        raise RuntimeError("HTTP %s: %s" % (e.code, detail))
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        raise RuntimeError("HTTP %s, content-type %s, not JSON. Body starts: %r" % (status, ctype, body[:400]))
 
 
 def call_model(messages):
@@ -107,11 +119,18 @@ def call_model(messages):
             "model": CFG["ollama_model"], "messages": messages, "stream": False,
             "format": "json", "options": {"num_ctx": 8192, "temperature": 0.2}}, {})
         return d["message"]["content"]
-    d = http_json("https://models.github.ai/inference/chat/completions", {
-        "model": CFG["github_model"], "messages": messages, "temperature": 0.2,
-        "response_format": {"type": "json_object"}},
-        {"Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
-         "Accept": "application/vnd.github+json"})
+    url = "https://models.github.ai/inference/chat/completions"
+    hdrs = {"Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+            "Accept": "application/vnd.github+json"}
+    base = {"model": CFG["github_model"], "messages": messages, "temperature": 0.2}
+    try:
+        d = http_json(url, {**base, "response_format": {"type": "json_object"}}, hdrs)
+    except RuntimeError as first:
+        # retry once without JSON mode (some models reject it); keep both errors for the report
+        try:
+            d = http_json(url, base, hdrs)
+        except RuntimeError as second:
+            raise RuntimeError("with JSON mode: %s || without: %s" % (first, second))
     return d["choices"][0]["message"]["content"]
 
 
