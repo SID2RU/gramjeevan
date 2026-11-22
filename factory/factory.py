@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -23,14 +24,20 @@ GODOT = os.environ.get("GODOT_BIN", "godot")
 ERR_MARKERS = ("SCRIPT ERROR", "Parse Error")
 
 SYSTEM_PROMPT = """You are a careful Godot 4.3 GDScript developer working on GramJeevan, a portrait
-touch-first 2D village farming game. Make ONE small change that completes the given task.
+touch-first 2D Indian village life game for children and families. Make ONE small change that completes the task.
+Reply in EXACTLY this format and nothing else:
+
+SUMMARY: one short sentence
+=== FILE: game/scripts/example.gd ===
+(the COMPLETE new content of that file)
+=== END FILE ===
+
 Rules:
-- Reply with ONLY a JSON object: {"summary": "one sentence", "files": [{"path": "game/scripts/x.gd", "content": "FULL new file content"}]}
-- Always return the COMPLETE content of every file you change (never fragments or diffs).
+- Output the COMPLETE content of every file you change, never fragments.
 - Only edit files under game/scripts/ or game/scenes/. Never touch tests, workflows or project.godot.
-- Use Godot 4.3 GDScript, tab indentation, no class_name, no external assets, no network or OS calls.
-- Keep game logic in game_state.gd (testable) and UI in main.gd. Do not break existing behaviour.
-- Keep the change small: at most a few files and a few hundred lines."""
+- Godot 4.3 GDScript. Indent with TABS. No class_name, no external assets, no network or OS calls.
+- Game logic belongs in game_state.gd, text and lessons in content.gd, UI in main.gd.
+- Do not break existing behaviour. Keep the change small."""
 
 
 def sh(cmd, timeout=120):
@@ -120,33 +127,38 @@ def http_json(url, payload, headers, timeout=300):
 
 
 def call_model(messages):
-    if os.environ.get("AI_PROVIDER", "github-models") == "ollama":
+    if os.environ.get("AI_PROVIDER", "ollama") == "ollama":
         d = http_json("http://localhost:11434/api/chat", {
             "model": CFG["ollama_model"], "messages": messages, "stream": False,
-            "format": "json", "options": {"num_ctx": 8192, "temperature": 0.2}}, {})
+            "options": {"num_ctx": 12288, "num_predict": 4096, "temperature": 0.2}}, {}, timeout=900)
         return d["message"]["content"]
-    url = "https://models.github.ai/inference/chat/completions"
-    hdrs = {"Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
-            "Accept": "application/vnd.github+json"}
-    base = {"model": CFG["github_model"], "messages": messages, "temperature": 0.2}
-    try:
-        d = http_json(url, {**base, "response_format": {"type": "json_object"}}, hdrs)
-    except RuntimeError as first:
-        # retry once without JSON mode (some models reject it); keep both errors for the report
-        try:
-            d = http_json(url, base, hdrs)
-        except RuntimeError as second:
-            raise RuntimeError("with JSON mode: %s || without: %s" % (first, second))
+    d = http_json("https://models.github.ai/inference/chat/completions", {
+        "model": CFG["github_model"], "messages": messages, "temperature": 0.2},
+        {"Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+         "Accept": "application/vnd.github+json"})
     return d["choices"][0]["message"]["content"]
+
+
+FILE_RE = re.compile(r"^=== FILE: (.+?) ===[ \t]*\n(.*?)\n=== END FILE ===", re.M | re.S)
 
 
 def parse_proposal(raw):
     raw = raw.strip()
+    blocks = FILE_RE.findall(raw)
+    if blocks:
+        m = re.search(r"^SUMMARY:\s*(.+)$", raw, re.M)
+        files = []
+        for path, content in blocks:
+            content = content.strip("\n")
+            content = re.sub(r"^```[a-zA-Z]*[ \t]*\n", "", content)
+            content = re.sub(r"\n```[ \t]*$", "", content)
+            files.append({"path": path.strip().strip("`"), "content": content + "\n"})
+        return {"summary": m.group(1).strip() if m else "", "files": files}
     raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
     try:
         return json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise ValueError("response was not valid JSON: %s" % e)
+    except json.JSONDecodeError:
+        raise ValueError("reply had no '=== FILE: path ===' blocks. Use the required format.")
 
 
 # ---------------------------------------------------------------- safety
@@ -232,6 +244,7 @@ def finish(status, task, details, pr_url=None, files=None, lines=0):
 
 # ---------------------------------------------------------------- cycle
 def cycle():
+    started = time.time()
     p = sh(["gh", "pr", "list", "--label", "ai-factory", "--state", "open", "--json", "number"])
     open_prs = len(json.loads(p.stdout or "[]")) if p.returncode == 0 else 0
     if open_prs >= CFG["max_open_ai_prs"]:
@@ -251,7 +264,11 @@ def cycle():
         {"role": "user", "content": "TASK: %s\n\nCURRENT PROJECT FILES:\n%s" % (text, read_context())},
     ]
     notes, files, lines, summary = [], [], 0, ""
+    success = False
     for attempt in range(1, CFG["max_attempts"] + 1):
+        if attempt > 1 and time.time() - started > CFG["deadline_minutes"] * 60:
+            notes.append("Stopped early to stay within the time limit.")
+            break
         try:
             raw = call_model(messages)
         except urllib.error.HTTPError as e:
@@ -270,13 +287,15 @@ def cycle():
             continue
         ok, log = run_checks()
         if ok:
+            success = True
             break
         notes.append("Attempt %d failed checks." % attempt)
         messages += [{"role": "assistant", "content": raw},
                      {"role": "user", "content": "Checks failed. Fix the errors and return the corrected full JSON.\n\n" + log[-2500:]}]
         revert()
-    else:
-        return finish("FAILED", text, "No valid change after %d attempts. Main untouched.\n\n%s" % (CFG["max_attempts"], "\n".join(notes)))
+    if not success:
+        revert()
+        return finish("FAILED", text, "No valid change. Main untouched.\n\n%s" % "\n".join(notes))
 
     mark_done(index)
     branch = "ai/cycle-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
