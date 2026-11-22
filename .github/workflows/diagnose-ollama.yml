@@ -1,0 +1,30 @@
+name: Diagnose Ollama
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Which hosts can the runner reach
+        run: |
+          for u in https://ollama.com https://registry.ollama.ai https://generativelanguage.googleapis.com https://huggingface.co https://api.github.com; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$u" || echo "FAIL")
+            echo "$u -> $code"
+          done
+          nproc
+          free -m | head -2
+          df -h / | tail -1
+
+      - name: Install Ollama and test a small model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve > ollama.log 2>&1 &
+          sleep 8
+          time ollama pull qwen2.5-coder:3b
+          time ollama run qwen2.5-coder:3b "Write a GDScript function heal(amount) that adds to a variable health. Code only."
